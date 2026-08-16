@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Document, DocumentVersion, DocumentCollaborator
+from .models import Document, DocumentVersion, DocumentCollaborator, Tag, AuditLog
 
 
 @admin.register(Document)
@@ -26,3 +26,18 @@ class DocumentCollaboratorAdmin(admin.ModelAdmin):
     list_filter = ('can_edit', 'added_at')
     search_fields = ('document__title', 'user__email')
     raw_id_fields = ('document', 'user', 'added_by')
+
+
+@admin.register(Tag)
+class TagAdmin(admin.ModelAdmin):
+    list_display = ('name',)
+    search_fields = ('name',)
+    filter_horizontal = ('documents',)
+
+
+@admin.register(AuditLog)
+class AuditLogAdmin(admin.ModelAdmin):
+    list_display = ('action', 'model_name', 'object_id', 'actor', 'timestamp')
+    list_filter = ('action', 'model_name', 'timestamp')
+    search_fields = ('object_id', 'actor__email')
+    readonly_fields = ('id', 'action', 'model_name', 'object_id', 'actor', 'timestamp')

@@ -65,9 +65,12 @@ class CommentDetailSerializer(CommentSerializer):
 
 
 class CommentCreateSerializer(serializers.ModelSerializer):
+    author = UserSerializer(read_only=True)
+
     class Meta:
         model = Comment
-        fields = ('document', 'parent', 'content')
+        fields = ('id', 'document', 'parent', 'content', 'author', 'created_at')
+        read_only_fields = ('id', 'author', 'created_at')
 
     def validate_document(self, value):
         user = self.context['request'].user
@@ -78,7 +81,7 @@ class CommentCreateSerializer(serializers.ModelSerializer):
         return value
 
     def validate_parent(self, value):
-        if value and self.initial_data.get('document') and value.document_id != int(self.initial_data.get('document')):
+        if value and self.initial_data.get('document') and str(value.document_id) != str(self.initial_data.get('document')):
             raise serializers.ValidationError("Parent comment must be on the same document.")
         return value
 

@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from django.db.models import Count
 from django_filters.rest_framework import DjangoFilterBackend
 
-from .models import Document, DocumentVersion, DocumentStatus, DocumentCollaborator
+from .models import Document, DocumentVersion, DocumentStatus, DocumentCollaborator, Tag, AuditLog
 from .serializers import (
     DocumentSerializer,
     DocumentCreateSerializer,
@@ -13,6 +13,8 @@ from .serializers import (
     DocumentVersionSerializer,
     RestoreVersionSerializer,
     DocumentCollaboratorSerializer,
+    TagSerializer,
+    AuditLogSerializer,
 )
 from workspaces.permissions import (
     CanCreateDocument,
@@ -23,22 +25,35 @@ from workspaces.permissions import (
 )
 
 
+class TagViewSet(viewsets.ModelViewSet):
+    queryset = Tag.objects.all()
+    serializer_class = TagSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name']
+    ordering_fields = ['name']
+
+
 class DocumentViewSet(viewsets.ModelViewSet):
     queryset = Document.objects.all()
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['workspace', 'status', 'parent', 'is_pinned']
+    filterset_fields = ['workspace', 'status', 'parent', 'is_pinned', 'tags__name', 'tags']
     search_fields = ['title', 'content']
     ordering_fields = ['created_at', 'updated_at', 'title', 'order']
 
     def get_queryset(self):
         user = self.request.user
-        return Document.objects.filter(
+        qs = Document.objects.filter(
             workspace__in=user.workspaces.all()
         ).annotate(
             versions_count=Count('versions', distinct=True),
             children_count=Count('children', distinct=True),
             comments_count=Count('comments', distinct=True),
-        ).distinct().order_by('-is_pinned', 'order', '-updated_at')
+        )
+        tag_param = self.request.query_params.get('tag')
+        if tag_param:
+            qs = qs.filter(tags__name=tag_param)
+        return qs.distinct().order_by('-is_pinned', 'order', '-updated_at')
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -66,16 +81,7 @@ class DocumentViewSet(viewsets.ModelViewSet):
         return obj
 
     def perform_create(self, serializer):
-        user = self.request.user
-        instance = serializer.save(created_by=user, last_edited_by=user)
-        DocumentVersion.objects.create(
-            document=instance,
-            title=instance.title,
-            content=instance.content,
-            version_number=1,
-            created_by=user
-        )
-        return instance
+        return serializer.save()
 
     @action(detail=True, methods=['get'], permission_classes=[CanViewDocument])
     def versions(self, request, pk=None):
@@ -173,3 +179,14 @@ class DocumentViewSet(viewsets.ModelViewSet):
             return Response({'detail': 'Collaborator not found.'}, status=status.HTTP_404_NOT_FOUND)
         collab.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['get'], permission_classes=[CanViewDocument])
+    def audit_logs(self, request, pk=None):
+        document = self.get_object()
+        logs = AuditLog.objects.filter(model_name='Document', object_id=str(document.id)).order_by('-timestamp')
+        page = self.paginate_queryset(logs)
+        if page is not None:
+            serializer = AuditLogSerializer(page, many=True, context={'request': request})
+            return self.get_paginated_response(serializer.data)
+        serializer = AuditLogSerializer(logs, many=True, context={'request': request})
+        return Response(serializer.data)

@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.utils import timezone
 from datetime import timedelta
 
@@ -56,14 +57,15 @@ class WorkspaceCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = self.context['request'].user
-        workspace = Workspace.objects.create(owner=user, **validated_data)
-        WorkspaceMember.objects.create(
-            workspace=workspace,
-            user=user,
-            role=Role.ADMIN,
-            invited_by=None
-        )
-        return workspace
+        with transaction.atomic():
+            workspace = Workspace.objects.create(owner=user, **validated_data)
+            WorkspaceMember.objects.create(
+                workspace=workspace,
+                user=user,
+                role=Role.ADMIN,
+                invited_by=None
+            )
+            return workspace
 
 
 class WorkspaceDetailSerializer(WorkspaceSerializer):

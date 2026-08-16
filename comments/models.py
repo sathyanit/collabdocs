@@ -1,9 +1,11 @@
+import uuid
 from django.db import models
 from django.conf import settings
 from django.utils.translation import gettext_lazy as _
 
 
 class Comment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     document = models.ForeignKey(
         'documents.Document',
         on_delete=models.CASCADE,
@@ -11,12 +13,14 @@ class Comment(models.Model):
     )
     author = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name='comments'
     )
     parent = models.ForeignKey(
         'self',
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name='replies'
@@ -50,7 +54,16 @@ class Comment(models.Model):
         ]
 
     def __str__(self):
-        return f"Comment by {self.author.email} on {self.document.title}"
+        author_email = self.author.email if self.author else 'Unknown'
+        return f"Comment by {author_email} on {self.document.title}"
+
+    @property
+    def is_top_level(self):
+        return self.parent_id is None
+
+    @property
+    def is_reply(self):
+        return self.parent_id is not None
 
     @property
     def is_deleted(self):
@@ -86,6 +99,7 @@ class Reaction(models.Model):
         ('fire', '🔥 Fire'),
     ]
 
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     comment = models.ForeignKey(Comment, on_delete=models.CASCADE, related_name='reactions')
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='reactions')
     reaction_type = models.CharField(max_length=20, choices=REACTION_CHOICES)
@@ -96,4 +110,5 @@ class Reaction(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.user.email} reacted {self.reaction_type} to comment {self.comment_id}"
+        user_email = self.user.email if self.user else 'Unknown'
+        return f"{user_email} reacted {self.reaction_type} to comment {self.comment_id}"

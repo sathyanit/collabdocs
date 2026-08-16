@@ -1,11 +1,19 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
+from django.db import transaction
 
-from .models import Document, DocumentVersion, DocumentStatus, DocumentCollaborator
+from .models import Document, DocumentVersion, DocumentStatus, DocumentCollaborator, Tag, AuditLog
 from accounts.serializers import UserSerializer
 from workspaces.serializers import WorkspaceSerializer
 
 User = get_user_model()
+
+
+class TagSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Tag
+        fields = ('id', 'name')
+        read_only_fields = ('id',)
 
 
 class DocumentVersionSerializer(serializers.ModelSerializer):
@@ -37,6 +45,21 @@ class DocumentCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Parent document must be in the same workspace.")
         return value
 
+    def create(self, validated_data):
+        user = self.context['request'].user
+        validated_data['created_by'] = user
+        validated_data['last_edited_by'] = user
+        with transaction.atomic():
+            instance = super().create(validated_data)
+            DocumentVersion.objects.create(
+                document=instance,
+                title=instance.title,
+                content=instance.content,
+                version_number=instance.versions.count() + 1,
+                created_by=user
+            )
+            return instance
+
 
 class DocumentSerializer(serializers.ModelSerializer):
     created_by = UserSerializer(read_only=True)
@@ -49,6 +72,7 @@ class DocumentSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False
     )
+    tags = TagSerializer(many=True, read_only=True)
     versions_count = serializers.IntegerField(read_only=True)
     children_count = serializers.IntegerField(read_only=True)
     comments_count = serializers.IntegerField(read_only=True)
@@ -58,11 +82,11 @@ class DocumentSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'workspace', 'workspace_id', 'parent', 'title', 'content',
             'status', 'status_display', 'created_by', 'last_edited_by',
-            'is_pinned', 'order', 'created_at', 'updated_at',
+            'is_pinned', 'order', 'tags', 'created_at', 'updated_at',
             'versions_count', 'children_count', 'comments_count'
         )
         read_only_fields = (
-            'id', 'created_by', 'last_edited_by', 'created_at', 'updated_at',
+            'id', 'created_by', 'last_edited_by', 'tags', 'created_at', 'updated_at',
             'versions_count', 'children_count', 'comments_count'
         )
 
@@ -95,28 +119,29 @@ class DocumentUpdateSerializer(serializers.ModelSerializer):
         save_version = validated_data.pop('save_version', True)
         change_summary = validated_data.pop('change_summary', '')
 
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
+        with transaction.atomic():
+            for attr, value in validated_data.items():
+                setattr(instance, attr, value)
 
-        user = self.context['request'].user
-        instance.last_edited_by = user
-        instance.save()
+            user = self.context['request'].user
+            instance.last_edited_by = user
+            instance.save()
 
-        if save_version:
-            DocumentVersion.objects.create(
-                document=instance,
-                title=instance.title,
-                content=instance.content,
-                version_number=instance.versions.count() + 1,
-                change_summary=change_summary,
-                created_by=user
-            )
+            if save_version:
+                DocumentVersion.objects.create(
+                    document=instance,
+                    title=instance.title,
+                    content=instance.content,
+                    version_number=instance.versions.count() + 1,
+                    change_summary=change_summary,
+                    created_by=user
+                )
 
-        return instance
+            return instance
 
 
 class RestoreVersionSerializer(serializers.Serializer):
-    version_id = serializers.IntegerField(required=True)
+    version_id = serializers.UUIDField(required=True)
 
     def validate_version_id(self, value):
         document = self.context['document']
@@ -146,3 +171,12 @@ class DocumentCollaboratorSerializer(serializers.ModelSerializer):
         model = DocumentCollaborator
         fields = ('id', 'user', 'user_id', 'can_edit', 'added_at', 'added_by')
         read_only_fields = ('id', 'added_at', 'added_by')
+
+
+class AuditLogSerializer(serializers.ModelSerializer):
+    actor = UserSerializer(read_only=True)
+
+    class Meta:
+        model = AuditLog
+        fields = ('id', 'actor', 'action', 'model_name', 'object_id', 'timestamp')
+        read_only_fields = ('id', 'actor', 'action', 'model_name', 'object_id', 'timestamp')

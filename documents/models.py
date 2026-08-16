@@ -61,40 +61,6 @@ class Document(models.Model):
     def __str__(self):
         return self.title
 
-    def _resolve_saved_by(self):
-        for candidate in [getattr(self, '_saved_by', None), self.last_edited_by, self.created_by]:
-            if candidate is not None:
-                return candidate
-        return None
-
-    def save(self, *args, **kwargs):
-        saved_by = self._resolve_saved_by()
-
-        with transaction.atomic():
-            super().save(*args, **kwargs)
-
-            version_number = (
-                DocumentVersion.objects
-                .filter(document=self)
-                .aggregate(max_ver=Max('version_number'))
-                .get('max_ver') or 0
-            ) + 1
-
-            DocumentVersion.objects.create(
-                document=self,
-                content=self.content,
-                version_number=version_number,
-                saved_by=saved_by,
-            )
-
-        return self
-
-    def set_saved_by(self, user):
-        self._saved_by = user
-        if self.created_by_id is None:
-            self.created_by = user
-        self.last_edited_by = user
-
     def get_current_version(self):
         return self.versions.order_by('-version_number').first()
 
@@ -106,16 +72,18 @@ class DocumentVersion(models.Model):
         on_delete=models.CASCADE,
         related_name='versions'
     )
-    content = models.TextField(blank=True)
+    title = models.CharField(max_length=500, blank=True, default='')
+    content = models.TextField(blank=True, default='')
     version_number = models.PositiveIntegerField()
-    saved_by = models.ForeignKey(
+    change_summary = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name='document_versions'
     )
-    saved_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['-version_number']
@@ -131,15 +99,19 @@ class DocumentVersion(models.Model):
 
     def restore(self, user, save_version=True):
         with transaction.atomic():
+            self.document.title = self.title
             self.document.content = self.content
-            self.document.set_saved_by(user)
-            original_flag = getattr(self.document, '_skip_version_on_save', False)
-            if not save_version:
-                self.document._skip_version_on_save = True
-            try:
-                self.document.save()
-            finally:
-                self.document._skip_version_on_save = original_flag
+            self.document.last_edited_by = user
+            self.document.save()
+            if save_version:
+                DocumentVersion.objects.create(
+                    document=self.document,
+                    title=self.title,
+                    content=self.content,
+                    version_number=self.document.versions.count() + 1,
+                    change_summary=f"Restored from version {self.version_number}",
+                    created_by=user,
+                )
         return self.document
 
 
@@ -167,3 +139,46 @@ class DocumentCollaborator(models.Model):
 
     def __str__(self):
         return f"{self.user.email} on {self.document.title}"
+
+
+class Tag(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=100, unique=True)
+    documents = models.ManyToManyField(
+        Document,
+        related_name='tags',
+        blank=True
+    )
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class AuditLog(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='audit_logs'
+    )
+    action = models.CharField(max_length=50)
+    model_name = models.CharField(max_length=100)
+    object_id = models.CharField(max_length=100)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['model_name', 'object_id']),
+            models.Index(fields=['actor']),
+            models.Index(fields=['timestamp']),
+        ]
+
+    def __str__(self):
+        actor_email = self.actor.email if self.actor else 'Anonymous'
+        return f"{actor_email} {self.action} {self.model_name} ({self.object_id})"
